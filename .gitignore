@@ -3,3 +3,4 @@ out_*
 snaps.jpg
 *.mp4
 run.log
+ios/*.xcodeproj/

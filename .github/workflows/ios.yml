@@ -1,0 +1,125 @@
+name: iOS
+
+on:
+  push:
+    branches: [main]
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+    inputs:
+      testflight:
+        description: TestFlight 업로드
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Xcode 선택
+        run: python3 ios/ci/select_xcode.py
+      - name: 프로젝트 생성
+        run: |
+          command -v xcodegen || brew install xcodegen
+          xcodegen generate --spec ios/project.yml
+      - name: 빌드 (시뮬레이터, 서명 없음)
+        run: |
+          set -o pipefail
+          xcodebuild build -project ios/AroundView.xcodeproj -scheme AroundView \
+            -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO \
+            -IDEBuildingContinueBuildingAfterErrors=YES 2>&1 | tee build.log | grep -E "error:|warning: .*Swift|BUILD" || true
+          grep -q "BUILD SUCCEEDED" build.log
+      - name: 기기용 빌드 (Metal 셰이더 포함, 서명 없음)
+        run: |
+          set -o pipefail
+          xcodebuild build -project ios/AroundView.xcodeproj -scheme AroundView \
+            -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO \
+            -IDEBuildingContinueBuildingAfterErrors=YES 2>&1 | tee build-device.log | grep -E "error:|BUILD" || true
+          grep -q "BUILD SUCCEEDED" build-device.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-logs
+          path: |
+            build.log
+            build-device.log
+
+  testflight:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.testflight
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Xcode 선택
+        run: python3 ios/ci/select_xcode.py
+      - name: 버전 확인
+        id: version
+        run: python3 ios/ci/check_version.py
+      - name: 서명 준비 · 번들 ID 등록 · 앱 확인
+        run: |
+          python3 -m pip install --break-system-packages -q pyjwt cryptography
+          python3 ios/ci/prepare_signing.py
+      - name: 지난 CI 인증서 정리 (개수 한도 방지)
+        run: |
+          python3 - <<'PY'
+          import json, os, time, urllib.request, jwt
+          kid, iss = os.environ["ASC_KEY_ID"], os.environ["ASC_ISSUER_ID"]
+          tok = jwt.encode({"iss": iss, "iat": int(time.time()), "exp": int(time.time()) + 600, "aud": "appstoreconnect-v1"},
+                           os.environ["ASC_KEY_P8"], algorithm="ES256", headers={"kid": kid})
+          def req(url, method="GET"):
+              r = urllib.request.Request(url, method=method, headers={"Authorization": f"Bearer {tok}"})
+              with urllib.request.urlopen(r) as f:
+                  b = f.read()
+                  return json.loads(b) if b else {}
+          for c in req("https://api.appstoreconnect.apple.com/v1/certificates?limit=200")["data"]:
+              a = c["attributes"]
+              if "Created via API" in (a.get("name") or "") + (a.get("displayName") or ""):
+                  req(f"https://api.appstoreconnect.apple.com/v1/certificates/{c['id']}", "DELETE")
+                  print("지움", a["name"])
+          PY
+      - name: 프로젝트 생성
+        run: |
+          command -v xcodegen || brew install xcodegen
+          xcodegen generate --spec ios/project.yml
+      - name: 아카이브
+        run: |
+          set -o pipefail
+          xcodebuild archive -project ios/AroundView.xcodeproj -scheme AroundView -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Automatic CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            -allowProvisioningUpdates -authenticationKeyPath "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" 2>&1 | tee archive.log | grep -E "error:|ARCHIVE" || true
+          grep -q "ARCHIVE SUCCEEDED" archive.log
+      - name: 내보내기와 업로드
+        run: |
+          python3 -c 'import os,plistlib; plistlib.dump({"method":"app-store-connect","destination":"export","teamID":os.environ["APPLE_TEAM_ID"],"signingStyle":"automatic","manageAppVersionAndBuildNumber":False},open(os.environ["RUNNER_TEMP"]+"/export.plist","wb"))'
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/App.xcarchive" -exportOptionsPlist "$RUNNER_TEMP/export.plist" \
+            -exportPath "$RUNNER_TEMP/export" -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          xcrun altool --upload-app -t ios -f "$(ls "$RUNNER_TEMP"/export/*.ipa | head -1)" \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" --show-progress
+      - name: TestFlight 처리 상태 확인
+        run: python3 ios/ci/verify_testflight.py
+      - name: 버전 태그
+        run: |
+          tag="v${{ steps.version.outputs.version }}-b${BUILD_NUMBER}"
+          git tag "$tag" && git push origin "$tag"
+      - name: 서명키 정리
+        if: always()
+        run: rm -f "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
