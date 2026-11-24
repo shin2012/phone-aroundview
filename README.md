@@ -24,7 +24,9 @@ flowchart LR
   D --> E[접지점 → 노면 위치<br/>추적·속도·예측]
   B --> F[가상 카메라 렌더]
   C --> F
-  E --> G[3D 상자 오버레이]
+  C --> M[노면 표시 인식<br/>도색 패치 × 템플릿 상관 GPU]
+  E --> G[3D 모델 오버레이<br/>SceneKit]
+  M --> G
   F --> H[어라운드 뷰]
   G --> H
 ```
@@ -36,6 +38,8 @@ flowchart LR
 | 표시 방식 | 실사 / 가상(테슬라식, 아스팔트 + 차선 도색만) / 혼합 |
 | 시점 | 위에서(정사영) / 뒤에서(원근), 두 손가락 확대 |
 | 물체 | 상자 아래 가운데를 노면에 투영해 거리 계산, 최근접 연결로 추적, 시야 밖은 마지막 속도로 최대 3초 예측 후 서서히 사라짐 |
+| 3D 모델 | 자차(흰색)·승용차·트럭·버스·오토바이·자전거·사람을 단색 3D 모델로 그림 (테슬라 화면 참고). 모델을 못 읽으면 상자로 대신 |
+| 노면 표시 | 0.5초마다 차 앞뒤 12×36m 를 5px/m 도색 지도로 뽑아 화살표 6종·횡단보도·횡단보도 예고·정지선·자전거·양보 템플릿(±6°)과 정규화 상관. 차선 점선·실선은 방해 템플릿으로 걸러냄. 두 번 이상 맞은 것만 월드에 고정해 깨끗한 그림으로 그림 (가상·혼합 화면) |
 
 ---
 
@@ -45,7 +49,12 @@ flowchart LR
 |---|---|
 | `ios/AroundView/Core` | ARKit 세션·자세, 물체 인식·추적, 좌표 변환 |
 | `ios/AroundView/Render` | Metal 셰이더(노면 기록·어라운드 뷰·미리보기)와 렌더러 |
-| `ios/AroundView/UI` | SwiftUI 화면, 3D 상자 오버레이, 설정 |
+| `ios/AroundView/UI` | SwiftUI 화면, 3D 모델 오버레이(SceneKit), 설정 |
+| `ios/AroundView/Assets3D` | 3D 모델 가공본 (OBJ, `tools/build_assets.py` 가 만듦) |
+| `ios/AroundView/RoadMarks` | 노면 표시 그림 가공본 (PNG + 실제 크기 `marks.json`) |
+| `assets/source` | 내려받은 원본과 라이선스 — 출처는 [`assets/SOURCES.md`](assets/SOURCES.md) |
+| `tools/build_assets.py` | 원본 → 앱용 가공 (모델 방향·크기·재질, SVG 자르기) |
+| `tools/mark_match_sim.py` | 노면 표시 인식 시험 (가짜 노면에서 앱과 같은 계산) |
 | `ios/project.yml` | XcodeGen 프로젝트 정의 (CI 에서 생성) |
 | `aroundview.py` | 1단계 서버 시험: 녹화 영상 → 탑뷰 모자이크 (OpenCV) |
 
@@ -58,6 +67,16 @@ GitHub Actions(macOS)에서 빌드하고 TestFlight 로 올립니다.
 ```bash
 gh workflow run ios.yml -f testflight=true
 ```
+
+### 🏷️ 버전 관리
+
+| 항목 | 규칙 |
+|---|---|
+| 앱 버전 | `ios/project.yml` 의 `MARKETING_VERSION` (x.y.z) — 설정 화면 맨 아래 '버전'에 표시 |
+| 빌드 번호 | CI 실행 번호(`github.run_number`)가 자동으로 들어감 |
+| 올리는 기준 | 새 기능·동작 변경 = 가운데(y), 버그 수정만 = 끝(z), 문구·배치·내부 정리 = 그대로 |
+| 변경 기록 | `CHANGELOG.md` 에 `## x.y.z` 항목이 없으면 CI 가 TestFlight 업로드를 거부 (`ios/ci/check_version.py`) |
+| 태그 | 업로드가 끝나면 CI 가 `vX.Y.Z-b빌드번호` 태그를 붙임 |
 
 <details><summary>처음 한 번 필요한 준비</summary>
 

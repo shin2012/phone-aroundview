@@ -6,7 +6,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: '5.0'
-    MARKETING_VERSION: '0.1.0'
+    MARKETING_VERSION: '0.2.0'
     CURRENT_PROJECT_VERSION: '1'
     TARGETED_DEVICE_FAMILY: '1'
     CODE_SIGN_STYLE: Automatic
@@ -15,7 +15,16 @@ targets:
   AroundView:
     type: application
     platform: iOS
-    sources: [AroundView]
+    sources:
+      - path: AroundView
+        excludes: ["Assets3D", "Assets3D/**", "RoadMarks", "RoadMarks/**"]
+      # 3D 모델·노면 표시 그림은 폴더째 번들에 복사 (Bundle.main.url(..., subdirectory:))
+      - path: AroundView/Assets3D
+        type: folder
+        buildPhase: resources
+      - path: AroundView/RoadMarks
+        type: folder
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: kr.b-612.aroundview

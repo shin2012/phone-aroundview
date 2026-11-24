@@ -1,0 +1,57 @@
+{
+ "straight": {
+  "w": 0.649,
+  "l": 5.078,
+  "src": "537_Proceeding_Direction"
+ },
+ "left": {
+  "w": 1.353,
+  "l": 5.078,
+  "src": "537_Proceeding_Direction"
+ },
+ "right": {
+  "w": 1.353,
+  "l": 5.078,
+  "src": "537_Proceeding_Direction"
+ },
+ "straight_left": {
+  "w": 1.379,
+  "l": 5.078,
+  "src": "538_Proceeding_Direction_2"
+ },
+ "straight_right": {
+  "w": 1.379,
+  "l": 5.078,
+  "src": "538_Proceeding_Direction_2"
+ },
+ "uturn": {
+  "w": 1.447,
+  "l": 5.078,
+  "src": "539_Proceeding_Direction_3"
+ },
+ "crosswalk_ahead": {
+  "w": 1.189,
+  "l": 3.106,
+  "src": "529_Crosswalk_Ahead"
+ },
+ "stop_line": {
+  "w": 3.268,
+  "l": 0.642,
+  "src": "530_Stop_Line"
+ },
+ "crosswalk": {
+  "w": 2.981,
+  "l": 4.078,
+  "src": "533_Crosswalk_2"
+ },
+ "bicycle": {
+  "w": 2.8,
+  "l": 1.843,
+  "src": "535_Bicycle_Only"
+ },
+ "yield": {
+  "w": 1.784,
+  "l": 5.078,
+  "src": "522_Yield"
+ }
+}

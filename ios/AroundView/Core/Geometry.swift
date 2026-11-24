@@ -106,16 +106,23 @@ struct VirtualCamera {
         }
     }
 
+    // 3D 오버레이(SceneKit)도 같은 값으로 카메라를 맞춘다
+    var center: SIMD3<Float> { kind == .top ? SIMD3(0, 0, -3) : SIMD3(0, 0, -9) }
+    var up: SIMD3<Float> { kind == .top ? SIMD3(0, 0, -1) : SIMD3(0, 1, 0) }
+    static let fovyDeg: Float = 55
+    var orthoHalfHeight: Float { 15 / zoom }
+    static let near: Float = 0.5, far: Float = 300
+
     var viewProj: simd_float4x4 {
+        let view = M4.lookAt(eye: eye, center: center, up: up)
         switch kind {
         case .top:
-            let halfH: Float = 15 / zoom
+            let halfH = orthoHalfHeight
             let halfW = halfH * aspect
-            let view = M4.lookAt(eye: SIMD3(0, 60, -3), center: SIMD3(0, 0, -3), up: SIMD3(0, 0, -1))
             return M4.ortho(l: -halfW, r: halfW, b: -halfH, t: halfH, n: 1, f: 200) * view
         case .chase:
-            let view = M4.lookAt(eye: eye, center: SIMD3(0, 0, -9), up: SIMD3(0, 1, 0))
-            return M4.perspective(fovy: 55 * .pi / 180, aspect: aspect, near: 0.5, far: 300) * view
+            return M4.perspective(fovy: VirtualCamera.fovyDeg * .pi / 180, aspect: aspect,
+                                  near: VirtualCamera.near, far: VirtualCamera.far) * view
         }
     }
 

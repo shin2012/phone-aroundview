@@ -73,6 +73,13 @@ final class ObjectDetector: ObservableObject {
     private let maskLock = NSLock()
     private var _mask: [MaskBox] = []
     private var _maskTime: Float = -10
+    private var _snapshot: [TrackedObject] = []
+
+    /// 렌더 스레드(SceneKit)에서 읽는 추적 목록
+    func snapshotObjects() -> [TrackedObject] {
+        maskLock.lock(); defer { maskLock.unlock() }
+        return _snapshot
+    }
 
     init() {
         queue.async { self.load() }
@@ -106,7 +113,7 @@ final class ObjectDetector: ObservableObject {
     func clear() {
         queue.async {
             self.tracks.removeAll()
-            self.maskLock.lock(); self._mask = []; self.maskLock.unlock()
+            self.maskLock.lock(); self._mask = []; self._snapshot = []; self.maskLock.unlock()
             DispatchQueue.main.async { self.objects = []; self.liveBoxes = [] }
         }
     }
@@ -171,6 +178,7 @@ final class ObjectDetector: ObservableObject {
         associate(dets, now: snap.time, pose: pose)
 
         let snapshot = tracks.filter { $0.hits >= 2 }
+        maskLock.lock(); _snapshot = snapshot; maskLock.unlock()
         DispatchQueue.main.async {
             self.objects = snapshot
             self.liveBoxes = boxes

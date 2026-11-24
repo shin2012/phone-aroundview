@@ -102,6 +102,7 @@ final class GroundMemory {
             lastResetID = resetID
             clear()
             ObjectDetector.shared.clear()
+            RoadMarkDetector.shared.clear()
         }
         guard frameID != lastFrameID else { return (pose, snap, pb) }
         lastFrameID = frameID
@@ -179,9 +180,6 @@ final class AroundRenderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         guard let cb = mem.queue.makeCommandBuffer() else { return }
         let state = mem.update(commandBuffer: cb)
-        guard let rpd = view.currentRenderPassDescriptor, let drawable = view.currentDrawable,
-              let enc = cb.makeRenderCommandEncoder(descriptor: rpd) else { cb.commit(); return }
-
         let size = view.drawableSize
         let cam = VirtualCamera(kind: viewKind, aspect: Float(size.width / max(size.height, 1)), zoom: zoom)
         let pose = state?.0 ?? CarPose()
@@ -191,6 +189,13 @@ final class AroundRenderer: NSObject, MTKViewDelegate {
                         grid: SIMD4(mem.ppm, Float(mem.N), time, max(Prefs.f(Prefs.memorySec), 10)),
                         mode: SIMD4(Float(mode), 0, 0, 0))
         let (color, meta) = mem.textures()
+        // 노면 표시 인식 (계산 인코더는 화면 인코더보다 먼저)
+        if let state, mode != 0 {
+            RoadMarkDetector.shared.maybeEncode(cb: cb, pose: state.0, time: state.1.time, color: color, meta: meta,
+                                                grid: u.grid)
+        }
+        guard let rpd = view.currentRenderPassDescriptor, let drawable = view.currentDrawable,
+              let enc = cb.makeRenderCommandEncoder(descriptor: rpd) else { cb.commit(); return }
         enc.setRenderPipelineState(pipeline)
         enc.setFragmentTexture(color, index: 0)
         enc.setFragmentTexture(meta, index: 1)

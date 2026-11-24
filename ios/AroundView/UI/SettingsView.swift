@@ -10,6 +10,13 @@ struct SettingsView: View {
     @AppStorage(Prefs.memorySec) private var memorySec = 120.0
     @AppStorage(Prefs.maxDistance) private var maxDistance = 22.0
     @AppStorage(Prefs.detection) private var detection = true
+    @AppStorage(Prefs.roadMarks) private var roadMarks = true
+
+    private var versionText: String {
+        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let b = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "\(v) (\(b))"
+    }
 
     var body: some View {
         NavigationStack {
@@ -29,8 +36,18 @@ struct SettingsView: View {
                     row("노면 기억 시간", value: $memorySec, range: 15...300, step: 5, unit: "초")
                     row("노면 기록 거리", value: $maxDistance, range: 8...35, step: 1, unit: "m")
                     Toggle("차량·사람 인식", isOn: $detection)
+                    Toggle("노면 표시 인식", isOn: $roadMarks)
                 } header: { Text("처리") } footer: {
-                    Text("기록 거리를 줄이면 먼 곳의 흐린 노면이 덜 섞입니다. 인식을 끄면 발열이 줄어듭니다.")
+                    Text("기록 거리를 줄이면 먼 곳의 흐린 노면이 덜 섞입니다. 인식을 끄면 발열이 줄어듭니다. 노면 표시(화살표·횡단보도·정지선 등)는 가상·혼합 화면에서만 그립니다.")
+                }
+                Section {
+                    HStack {
+                        Text("버전")
+                        Spacer()
+                        Text(verbatim: versionText).monospacedDigit().foregroundStyle(.secondary)
+                    }
+                } header: { Text("정보") } footer: {
+                    Text("3D 모델: Quaternius, Kenney, Grab3D (모두 CC0). 노면 표시 그림: 위키미디어 공용의 대한민국 노면표시 (퍼블릭 도메인).")
                 }
             }
             .navigationTitle("설정")

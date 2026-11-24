@@ -109,21 +109,35 @@ static Ground castGround(float2 uv, constant RenderU &u) {
     return g;
 }
 
-static bool lookup(float2 w, texture2d<float> color, texture2d<float> meta, constant RenderU &u,
+/// 노면 기억 조회. grid = (ppm, N, 현재 시각, 기억 시간)
+static bool lookup(float2 w, texture2d<float> color, texture2d<float> meta, float4 grid,
                    thread float3 &rgb, thread float &age) {
     constexpr sampler rs(address::repeat, filter::linear);
-    float ppm = u.grid.x; int N = int(u.grid.y);
+    float ppm = grid.x; int N = int(grid.y);
     int2 cell = int2(floor(w * ppm));
     uint2 idx = uint2(((cell % N) + N) % N);
     float4 m = meta.read(idx);
     if (m.x != float(cell.x) || m.y != float(cell.y)) return false;
-    age = u.grid.z - m.z;
-    if (age > u.grid.w || age < -1.0) return false;
-    rgb = color.sample(rs, w * ppm / float(N)).rgb;
+    age = grid.z - m.z;
+    if (age > grid.w || age < -1.0) return false;
+    rgb = color.sample(rs, w * ppm / float(N), level(0)).rgb;
     return true;
 }
 
 static float luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }
+
+/// 차선 도색 정도: 주변 평균보다 밝고(흰색) 충분히 밝은 곳. 화면 그리기와 노면 표시 인식이 같이 씀
+static float paintScore(float2 w, float3 rgb, texture2d<float> color, texture2d<float> meta, float4 grid) {
+    float l = luma(rgb);
+    float sum = 0; float n = 0;
+    float2 offs[4] = { float2(0.7, 0), float2(-0.7, 0), float2(0, 0.7), float2(0, -0.7) };
+    for (int i = 0; i < 4; i++) {
+        float3 c2; float a2;
+        if (lookup(w + offs[i], color, meta, grid, c2, a2)) { sum += luma(c2); n += 1; }
+    }
+    float mean = n > 0 ? sum / n : l;
+    return smoothstep(0.06, 0.16, l - mean) * smoothstep(0.30, 0.45, l);
+}
 
 fragment float4 aroundFragment(VOut in [[stage_in]],
                                texture2d<float> color [[texture(0)]],
@@ -137,7 +151,7 @@ fragment float4 aroundFragment(VOut in [[stage_in]],
     float3 unknown = float3(0.075, 0.08, 0.095);
     float3 asphalt = float3(0.17, 0.18, 0.20);
     float3 rgb; float age = 0;
-    bool ok = lookup(g.world, color, meta, u, rgb, age);
+    bool ok = lookup(g.world, color, meta, u.grid, rgb, age);
     float fog = smoothstep(35.0, 90.0, g.dist);
 
     float3 outc;
@@ -149,15 +163,7 @@ fragment float4 aroundFragment(VOut in [[stage_in]],
     } else {
         float fade = mix(1.0, 0.55, clamp(age / u.grid.w, 0.0, 1.0));
         // 차선 도색 판정: 주변 평균보다 밝고 채도 낮음(흰색) 또는 노란색
-        float l = luma(rgb);
-        float sum = 0; float n = 0;
-        float2 offs[4] = { float2(0.7, 0), float2(-0.7, 0), float2(0, 0.7), float2(0, -0.7) };
-        for (int i = 0; i < 4; i++) {
-            float3 c2; float a2;
-            if (lookup(g.world + offs[i], color, meta, u, c2, a2)) { sum += luma(c2); n += 1; }
-        }
-        float mean = n > 0 ? sum / n : l;
-        float paint = smoothstep(0.06, 0.16, l - mean) * smoothstep(0.30, 0.45, l);
+        float paint = paintScore(g.world, rgb, color, meta, u.grid);
         bool yellow = (rgb.r - rgb.b) > 0.12 && (rgb.g - rgb.b) > 0.06;
         float3 paintCol = yellow ? float3(1.0, 0.78, 0.25) : float3(0.95, 0.96, 0.98);
 
@@ -175,7 +181,68 @@ fragment float4 aroundFragment(VOut in [[stage_in]],
     return float4(outc, 1);
 }
 
-// ---------- 3) 카메라 미리보기 ----------
+// ---------- 3) 노면 표시 인식 ----------
+// 차 기준 정렬 패치: 열 = 오른쪽(X) 증가, 행 = 앞쪽(Z) 증가. 값 = 도색 정도(0~1), 기록 없음 = -1
+struct PatchU {
+    float4 car;    // originX originZ fwdX fwdZ
+    float4 grid;   // ppm N time memorySec
+    float4 patch;  // X0 Z0 patchPPM 0
+};
+
+kernel void paintPatch(texture2d<float> color [[texture(0)]],
+                       texture2d<float> meta  [[texture(1)]],
+                       texture2d<float, access::write> out [[texture(2)]],
+                       constant PatchU &u [[buffer(0)]],
+                       uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= out.get_width() || gid.y >= out.get_height()) return;
+    float2 f = u.car.zw;
+    float2 r = float2(-f.y, f.x);
+    float step = 1.0 / u.patch.z;
+    // 2×2 표본 평균 (패치가 노면 기억보다 성김)
+    float acc = 0; float n = 0;
+    for (int sy = 0; sy < 2; sy++) for (int sx = 0; sx < 2; sx++) {
+        float X = u.patch.x + (float(gid.x) + 0.25 + 0.5 * sx) * step;
+        float Z = u.patch.y + (float(gid.y) + 0.25 + 0.5 * sy) * step;
+        float2 w = u.car.xy + r * X + f * Z;
+        float3 rgb; float age;
+        if (lookup(w, color, meta, u.grid, rgb, age)) { acc += paintScore(w, rgb, color, meta, u.grid); n += 1; }
+    }
+    out.write(float4(n >= 2 ? acc / n : -1.0), gid);
+}
+
+struct TplInfo { int offset; int w; int h; int pad; };
+
+// 위치마다·템플릿마다 정규화 상관. 템플릿은 평균 0, 길이 1 로 미리 맞춰 둠
+kernel void matchMarks(texture2d<float> patch [[texture(0)]],
+                       constant float *tpl [[buffer(0)]],
+                       constant TplInfo *info [[buffer(1)]],
+                       device float *scores [[buffer(2)]],
+                       constant uint4 &dims [[buffer(3)]],   // W H T 0
+                       uint3 gid [[thread_position_in_grid]]) {
+    uint W = dims.x, H = dims.y, T = dims.z;
+    if (gid.x >= W || gid.y >= H || gid.z >= T) return;
+    TplInfo ti = info[gid.z];
+    int x0 = int(gid.x) - ti.w / 2, y0 = int(gid.y) - ti.h / 2;
+    float score = 0;
+    if (x0 >= 0 && y0 >= 0 && x0 + ti.w <= int(W) && y0 + ti.h <= int(H)) {
+        float n = 0, sp = 0, sp2 = 0, stp = 0; int bad = 0;
+        for (int j = 0; j < ti.h; j++) {
+            for (int i = 0; i < ti.w; i++) {
+                float p = patch.read(uint2(x0 + i, y0 + j)).r;
+                if (p < 0) { bad++; continue; }
+                float t = tpl[ti.offset + j * ti.w + i];
+                n += 1; sp += p; sp2 += p * p; stp += t * p;
+            }
+        }
+        if (bad <= ti.w * ti.h / 10 && n > 0) {
+            float var = sp2 - sp * sp / n;
+            if (var > 1e-3) score = stp / sqrt(var);
+        }
+    }
+    scores[(gid.z * H + gid.y) * W + gid.x] = score;
+}
+
+// ---------- 4) 카메라 미리보기 ----------
 struct PreviewU { float4 aff0; float4 aff1; };  // 세로 화면 정규 → 이미지 정규
 
 fragment float4 previewFragment(VOut in [[stage_in]],

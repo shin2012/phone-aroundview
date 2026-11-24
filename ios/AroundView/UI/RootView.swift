@@ -34,7 +34,8 @@ struct RootView: View {
             Color.black.ignoresSafeArea()
             ZStack {
                 AroundMetalView(kind: kind, mode: mode, zoom: Float(zoom))
-                ObjectOverlay(kind: kind, zoom: Float(zoom))
+                SceneOverlay(kind: kind, mode: mode, zoom: Float(zoom))
+                    .allowsHitTesting(false)
             }
             .ignoresSafeArea()
             .gesture(MagnificationGesture()
