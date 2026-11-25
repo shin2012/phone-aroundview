@@ -75,7 +75,7 @@ flowchart LR
 
 <details><summary>업로드 서버 운영</summary>
 
-- 사용자 서비스 `aroundview-upload` (172.22.0.1:8945), 환경 `~/.hermes/envs/aroundview.env` (`AV_UPLOAD_TOKEN`, 텔레그램 알림)
+- 사용자 서비스 `aroundview-upload` (172.22.0.1:8945), 환경 `/vault/phone-aroundview/secrets.env` (`AV_UPLOAD_TOKEN`, 텔레그램 알림)
 - NPM 호스트 `aroundview.b-612.kr` (Cloudflare 프록시 끔 — 100MB 제한·브라우저 검사 회피), 토큰 인증
 - 받은 기록: `data/sessions/` (git 제외). 완료되면 `server/on_done.sh` 가 분석 후 텔레그램으로 보고
 
