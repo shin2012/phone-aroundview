@@ -32,6 +32,8 @@ struct CameraSnap {
     var fromPortrait: CGAffineTransform
     var groundY: Float
     var time: Float
+    /// ARFrame.timestamp (부팅 후 초) — 주행 기록과 맞추는 시각
+    var stamp: Double = 0
 
     var position: SIMD3<Float> { SIMD3(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z) }
 

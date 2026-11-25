@@ -4,6 +4,7 @@ import SwiftUI
 struct AroundViewApp: App {
     init() {
         Prefs.register()
+        _ = Recorder.shared // 위치 관리자는 메인 스레드에서 만들어야 함
         ARManager.shared.onFrame = { pb, snap, pose in
             ObjectDetector.shared.submit(pb, snap: snap, pose: pose)
         }
@@ -17,6 +18,8 @@ struct AroundViewApp: App {
 struct RootView: View {
     @StateObject private var ar = ARManager.shared
     @StateObject private var detector = ObjectDetector.shared
+    @StateObject private var rec = Recorder.shared
+    @StateObject private var store = RecordingStore.shared
     @Environment(\.scenePhase) private var phase
 
     @AppStorage(Prefs.renderMode) private var mode = 2
@@ -62,7 +65,13 @@ struct RootView: View {
         }
         .onAppear { ar.start() }
         .onChange(of: phase) { _, p in
-            if p == .active { ar.start() } else if p == .background { ar.pause() }
+            if p == .active { ar.start() } else if p == .background {
+                if rec.isRecording { rec.stop() } // 백그라운드에선 카메라가 멈추므로 기록을 마무리
+                ar.pause()
+            }
+        }
+        .onOpenURL { url in
+            if store.handle(url: url) { showSettings = true }
         }
     }
 
@@ -81,6 +90,12 @@ struct RootView: View {
                 }
                 if !ar.thermalText.isEmpty { chip(ar.thermalText, color: .red) }
                 if !detector.status.isEmpty { chip(detector.status, color: .red) }
+                if rec.isRecording {
+                    chip("기록 중 \(RecordingsView.duration(rec.elapsed)) · "
+                         + ByteCountFormatter.string(fromByteCount: rec.bytes, countStyle: .file)
+                         + (rec.flags > 0 ? " · 표시 \(rec.flags)" : ""), color: .red)
+                }
+                if !rec.lastError.isEmpty { chip(rec.lastError, color: .red) }
             }
             Spacer()
             cameraInset
@@ -124,6 +139,22 @@ struct RootView: View {
                     ForEach(VirtualCamera.Kind.allCases) { Text($0.label).tag($0.rawValue) }
                 }
                 .pickerStyle(.segmented)
+                Button {
+                    if rec.isRecording { rec.stop() } else { rec.start() }
+                } label: {
+                    Image(systemName: rec.isRecording ? "stop.circle.fill" : "record.circle")
+                        .foregroundStyle(.red)
+                        .frame(width: 40, height: 32)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel(rec.isRecording ? "기록 멈춤" : "기록 시작")
+                if rec.isRecording {
+                    Button { rec.flag() } label: {
+                        Image(systemName: "flag.fill").foregroundStyle(.yellow).frame(width: 40, height: 32)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("문제 지점 표시")
+                }
                 Button {
                     ar.reset()
                 } label: {

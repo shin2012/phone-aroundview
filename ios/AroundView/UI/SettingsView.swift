@@ -41,6 +41,11 @@ struct SettingsView: View {
                     Text("기록 거리를 줄이면 먼 곳의 흐린 노면이 덜 섞입니다. 인식을 끄면 발열이 줄어듭니다. 노면 표시(화살표·횡단보도·정지선 등)는 가상·혼합 화면에서만 그립니다.")
                 }
                 Section {
+                    NavigationLink("주행 기록") { RecordingsView() }
+                } header: { Text("시험 자료") } footer: {
+                    Text("주행 화면의 빨간 버튼으로 카메라 영상·자세·센서·인식 결과를 기록합니다. 기록 중 화면이 이상하면 노란 깃발을 눌러 그 시점을 표시하세요. 1분에 약 40MB.")
+                }
+                Section {
                     HStack {
                         Text("버전")
                         Spacer()

@@ -43,6 +43,46 @@ flowchart LR
 
 ---
 
+## 🎥 주행 기록과 서버 재생 (0.3.0~)
+
+화면만 보고는 원인을 알기 어려워서, 주행 원자료를 기록해 서버에서 같은 계산을 다시 돌려 봅니다.
+
+```mermaid
+flowchart LR
+  A[앱: 빨간 버튼으로 기록] --> B[설정 → 주행 기록 → 서버에 올리기<br/>16MB 조각, 이어 올리기]
+  B --> C[aroundview.b-612.kr<br/>server/upload_server.py]
+  C --> D[tools/replay.py<br/>보고서·재생 영상]
+  D --> E[텔레그램 요약]
+```
+
+| 파일 | 내용 |
+|---|---|
+| `video.mov` | 카메라 원본 (HEVC 1280×960, 5초 조각 기록이라 앱이 꺼져도 앞부분은 남음) |
+| `frames.jsonl` | 프레임마다 ARKit 카메라 행렬(`T`, 열 우선)·내부 파라미터(`K`, 1920×1440 기준)·추적 상태·자차 자세·속도·방향 오프셋 |
+| `motion.jsonl` / `gps.jsonl` | 100Hz 자세·자이로·가속도 / GPS 위치·속도·방향, 나침반 |
+| `det.jsonl` / `marks.jsonl` | 물체 인식 상자(세로 화면 정규좌표)·노면 위치·추적 / 노면 표시 후보·고정 결과 |
+| `events.jsonl` | 시작·끝·초기화·중단·추적 상태 변화·깃발(문제 지점) |
+| `meta.json` | 기기·앱 버전·설정값(거치 높이 등)·`t0` |
+
+모든 `t` 는 부팅 후 초(ARFrame.timestamp 와 같은 시계)이고, 영상 시각 = `t - t0` 입니다.
+
+```bash
+.venv/bin/python tools/replay.py data/sessions/<기록>          # → <기록>/analysis/
+.venv/bin/python tools/make_fake_session.py /tmp/x/20260101_000000  # 가짜 기록 (계산 검증용)
+```
+
+재생 결과: `report.md`(추적·속도 오차·방향 보정·인식 수·깃발), `track.png`(ARKit 경로 vs GPS), `speed.png`, `replay.mp4`(카메라 | 노면 기억 탑뷰), `flag_<n>.jpg`, `overview.jpg`.
+
+<details><summary>업로드 서버 운영</summary>
+
+- 사용자 서비스 `aroundview-upload` (172.22.0.1:8945), 환경 `~/.hermes/envs/aroundview.env` (`AV_UPLOAD_TOKEN`, 텔레그램 알림)
+- NPM 호스트 `aroundview.b-612.kr` (Cloudflare 프록시 끔 — 100MB 제한·브라우저 검사 회피), 토큰 인증
+- 받은 기록: `data/sessions/` (git 제외). 완료되면 `server/on_done.sh` 가 분석 후 텔레그램으로 보고
+
+</details>
+
+---
+
 ## 📂 구성
 
 | 경로 | 설명 |
@@ -55,6 +95,9 @@ flowchart LR
 | `assets/source` | 내려받은 원본과 라이선스 — 출처는 [`assets/SOURCES.md`](assets/SOURCES.md) |
 | `tools/build_assets.py` | 원본 → 앱용 가공 (모델 방향·크기·재질, SVG 자르기) |
 | `tools/mark_match_sim.py` | 노면 표시 인식 시험 (가짜 노면에서 앱과 같은 계산) |
+| `tools/replay.py` | 주행 기록 → 보고서·재생 영상 (앱의 노면 기억 계산을 numpy 로 재현) |
+| `tools/make_fake_session.py` | 가짜 주행 기록 생성 (형식·계산 검증) |
+| `server/` | 기록 업로드 수신 서버 + 완료 후 분석·알림 |
 | `ios/project.yml` | XcodeGen 프로젝트 정의 (CI 에서 생성) |
 | `aroundview.py` | 1단계 서버 시험: 녹화 영상 → 탑뷰 모자이크 (OpenCV) |
 

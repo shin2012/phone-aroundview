@@ -294,6 +294,10 @@ final class RoadMarkDetector {
             dets.append((kind, world, hw, c.score))
         }
         merge(dets, now: time, pose: pose)
+        if Recorder.shared.active {
+            lock.lock(); let snapshot = tracks; lock.unlock()
+            Recorder.shared.recordMarks(sessionTime: time, pose: pose, dets: dets, tracks: snapshot)
+        }
     }
 
     private func merge(_ dets: [(MarkKind, SIMD2<Float>, SIMD2<Float>, Float)], now: Float, pose: CarPose) {

@@ -75,6 +75,7 @@ final class ARManager: NSObject, ObservableObject, ARSessionDelegate {
 
     /// 노면 기억·물체·방향 학습을 모두 지우고 추적을 다시 시작
     func reset(keepHeading: Bool = true) {
+        Recorder.shared.event("reset", ["keepHeading": keepHeading])
         queue.async {
             self.history.removeAll()
             self.t0 = nil
@@ -154,7 +155,7 @@ final class ARManager: NSObject, ObservableObject, ARSessionDelegate {
         let snap = CameraSnap(transform: tf, intrinsics: cam.intrinsics,
                               imageSize: SIMD2(Float(res.width), Float(res.height)),
                               toPortrait: cachedToPortrait, fromPortrait: cachedFromPortrait,
-                              groundY: groundY, time: time)
+                              groundY: groundY, time: time, stamp: t)
 
         lock.lock()
         if ok { // 추적이 불안정하면 노면을 기록하지 않음 (이전 정상 프레임 유지)
@@ -166,6 +167,12 @@ final class ARManager: NSObject, ObservableObject, ARSessionDelegate {
         lock.unlock()
 
         if ok { onFrame?(frame.capturedImage, snap, pose) }
+
+        if Recorder.shared.active {
+            let signedSpeed = simd_dot(SIMD3(vel.x, 0, vel.y), pose.forward) >= 0 ? speed : -speed
+            Recorder.shared.record(frame: frame, pose: pose, speed: signedSpeed, offsetAngle: offsetAngle,
+                                   offsetSamples: offsetSamples, ok: ok)
+        }
 
         if t - lastPublish > 0.2 {
             lastPublish = t
@@ -184,14 +191,17 @@ final class ARManager: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func session(_ session: ARSession, didFailWithError error: Error) {
+        Recorder.shared.event("ar_error", ["msg": error.localizedDescription])
         DispatchQueue.main.async { self.trackingText = "오류: \(error.localizedDescription)" }
     }
 
     func sessionWasInterrupted(_ session: ARSession) {
+        Recorder.shared.event("interrupted")
         DispatchQueue.main.async { self.trackingText = "중단됨" }
     }
 
     func sessionInterruptionEnded(_ session: ARSession) {
+        Recorder.shared.event("interruption_ended")
         reset()
     }
 

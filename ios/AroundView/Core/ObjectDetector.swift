@@ -146,8 +146,22 @@ final class ObjectDetector: ObservableObject {
         var dets: [(kind: ObjectKind, pos: SIMD2<Float>, width: Float, box: CGRect)] = []
         var masks: [MaskBox] = []
         var boxes: [(CGRect, ObjectKind)] = []
+        let logging = Recorder.shared.active
+        var logBoxes: [[String: Any]] = []
         for o in obs {
-            guard let top = o.labels.first, top.confidence > 0.35,
+            guard let top = o.labels.first else { continue }
+            if logging, top.confidence > 0.2 {
+                // 세로 화면 정규좌표 (좌상단 원점) 상자 + 접지점 노면 위치
+                let bb = o.boundingBox
+                let rr = CGRect(x: bb.minX, y: 1 - bb.maxY, width: bb.width, height: bb.height)
+                var b: [String: Any] = ["k": top.identifier, "c": Double(top.confidence),
+                                        "b": [rr.minX, rr.minY, rr.width, rr.height].map { (Double($0) * 1e4).rounded() / 1e4 }]
+                if let g = snap.groundHit(portrait: CGPoint(x: rr.midX, y: rr.maxY)) {
+                    b["g"] = [Double(g.x), Double(g.z)].map { ($0 * 1e3).rounded() / 1e3 }
+                }
+                logBoxes.append(b)
+            }
+            guard top.confidence > 0.35,
                   let kind = ObjectKind(rawValue: top.identifier) else { continue }
             let bb = o.boundingBox // 좌하단 원점
             let r = CGRect(x: bb.minX, y: 1 - bb.maxY, width: bb.width, height: bb.height) // 좌상단 원점
@@ -179,6 +193,7 @@ final class ObjectDetector: ObservableObject {
 
         let snapshot = tracks.filter { $0.hits >= 2 }
         maskLock.lock(); _snapshot = snapshot; maskLock.unlock()
+        if logging { Recorder.shared.recordDetections(t: snap.stamp, boxes: logBoxes, tracks: tracks) }
         DispatchQueue.main.async {
             self.objects = snapshot
             self.liveBoxes = boxes
