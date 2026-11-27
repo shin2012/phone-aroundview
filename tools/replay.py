@@ -103,6 +103,18 @@ rep["heading_offset_deg_final"] = round(math.degrees(frames[-1].get("off", 0)), 
 rep["reset_events"] = sum(1 for e in events if e.get("e") == "reset")
 rep["interruptions"] = sum(1 for e in events if e.get("e") == "interrupted")
 rep["thermal_max"] = max((f.get("th", 0) for f in frames), default=0)
+# 0.4.0~: 노면 기록을 쉰 프레임과 이유, 후진으로 판정된 비율, 거치 비뚤어짐
+skips = {}
+for f in frames:
+    if f.get("ok") and not f.get("w", True):
+        skips[f.get("why", "?")] = skips.get(f.get("why", "?"), 0) + 1
+rep["ground_skip_frames"] = skips
+rep["reverse_frames"] = sum(1 for f in frames if f.get("spd", 0) < -0.7)
+if any("gy" in f for f in frames):
+    gy = np.array([f["gy"] for f in frames if f.get("ok") and "gy" in f])
+    raw = np.array([f["T"][13] - mount for f in frames if f.get("ok") and "gy" in f])
+    rep["ground_height_jitter_cm"] = {"raw": round(float(np.std(np.diff(raw))) * 100, 2),
+                                      "filtered": round(float(np.std(np.diff(gy))) * 100, 2)}
 
 # GPS 비교
 gps_cmp = None
@@ -349,7 +361,7 @@ else:
         side = side or hood_side_of(f["T"])
         G.move(o, fw, 0 if last_t is None else t - last_t)
         last_t = t
-        if f.get("ok"):
+        if f.get("ok") and f.get("w", True):   # 0.4.0~: 앱이 흔들림 등으로 쉰 프레임은 똑같이 건너뜀
             G.paint(frame_img, f["T"], f["K"], f["o"][1], o, fw, side)
         # 전체 경로 모자이크 (2px/m, 차 주변 앞쪽 띠만)
         if f.get("ok") and int(t * 2) != int((t - 1 / 30) * 2):

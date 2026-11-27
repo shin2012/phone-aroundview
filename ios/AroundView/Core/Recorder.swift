@@ -20,7 +20,7 @@ import simd
 /// - `meta.json`    기기·앱 버전·설정·영상 형식, 끝날 때 통계
 ///
 /// 모든 `t` 는 기기 부팅 후 초 (ARFrame.timestamp 와 같은 시계). 영상 시각 = t - meta.t0.
-final class Recorder: NSObject, ObservableObject, CLLocationManagerDelegate {
+final class Recorder: NSObject, ObservableObject {
     static let shared = Recorder()
 
     // UI (메인)
@@ -57,19 +57,11 @@ final class Recorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     private var resolutionLogged = CGSize.zero
     private var flagCount = 0
 
-    private let motion = CMMotionManager()
-    private let motionQueue = OperationQueue()
-    private let location = CLLocationManager()
     private var timer: Timer?
     private var startUptime: Double = 0
 
     override init() {
         super.init()
-        motionQueue.maxConcurrentOperationCount = 1
-        location.delegate = self
-        location.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-        location.activityType = .automotiveNavigation
-        location.distanceFilter = kCLDistanceFilterNone
     }
 
     static var rootDir: URL {
@@ -123,10 +115,7 @@ final class Recorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
         stateLock.lock(); _active = true; stateLock.unlock()
 
-        startMotion()
-        location.requestWhenInUseAuthorization()
-        location.startUpdatingLocation()
-        location.startUpdatingHeading()
+        SensorHub.shared.start() // 센서는 SensorHub 가 돌리고 기록 중이면 여기로 넘겨 줌
 
         event("start")
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
@@ -137,9 +126,6 @@ final class Recorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         event("stop")
         stateLock.lock(); _active = false; stateLock.unlock()
         timer?.invalidate(); timer = nil
-        motion.stopDeviceMotionUpdates()
-        location.stopUpdatingLocation()
-        location.stopUpdatingHeading()
         isRecording = false
         currentName = nil
 
@@ -193,7 +179,8 @@ final class Recorder: NSObject, ObservableObject, CLLocationManagerDelegate {
     // MARK: 입력
 
     /// AR 큐에서 프레임마다 부름 (추적 상태와 상관없이 모든 프레임)
-    func record(frame: ARFrame, pose: CarPose, speed: Float, offsetAngle: Float, offsetSamples: Int, ok: Bool) {
+    func record(frame: ARFrame, pose: CarPose, speed: Float, offsetAngle: Float, offsetSamples: Int, ok: Bool,
+                write: Bool = true, skipReason: String = "", groundY: Float = 0) {
         guard active else { return }
         let cam = frame.camera
         let t = frame.timestamp
@@ -245,6 +232,8 @@ final class Recorder: NSObject, ObservableObject, CLLocationManagerDelegate {
                 "o": [pose.origin.x, pose.origin.y, pose.origin.z].map { r($0) },
                 "f": [pose.forward.x, pose.forward.z].map { r($0) },
                 "spd": r(speed), "off": r(offsetAngle), "offn": offsetSamples,
+                // 0.4.0~: 노면 기록 여부·쉰 이유, 걸러진 노면 높이
+                "w": write, "why": skipReason, "gy": r(groundY),
             ]
             self.frameCount += 1
             self.files["frames"]?.write(rec)
@@ -356,25 +345,22 @@ final class Recorder: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     // MARK: 센서
 
-    private func startMotion() {
-        guard motion.isDeviceMotionAvailable else { return }
-        motion.deviceMotionUpdateInterval = 0.01
-        motion.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: motionQueue) { [weak self] m, _ in
-            guard let self, let m, self.active else { return }
-            let q = m.attitude.quaternion
-            let rr = m.rotationRate, ua = m.userAcceleration, g = m.gravity
-            let rec: [String: Any] = [
-                "t": m.timestamp,
-                "q": [q.x, q.y, q.z, q.w].map { r6($0) },
-                "rr": [rr.x, rr.y, rr.z].map { r6($0) },
-                "ua": [ua.x, ua.y, ua.z].map { r6($0) },
-                "g": [g.x, g.y, g.z].map { r6($0) },
-            ]
-            self.queue.async { self.files["motion"]?.write(rec) }
-        }
+    /// SensorHub 의 모션 큐에서 부름 (100Hz)
+    func recordMotion(_ m: CMDeviceMotion) {
+        guard active else { return }
+        let q = m.attitude.quaternion
+        let rr = m.rotationRate, ua = m.userAcceleration, g = m.gravity
+        let rec: [String: Any] = [
+            "t": m.timestamp,
+            "q": [q.x, q.y, q.z, q.w].map { r6($0) },
+            "rr": [rr.x, rr.y, rr.z].map { r6($0) },
+            "ua": [ua.x, ua.y, ua.z].map { r6($0) },
+            "g": [g.x, g.y, g.z].map { r6($0) },
+        ]
+        queue.async { self.files["motion"]?.write(rec) }
     }
 
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+    func recordLocations(_ locations: [CLLocation]) {
         guard active else { return }
         let nowUp = ProcessInfo.processInfo.systemUptime
         let nowDate = Date()
@@ -390,7 +376,7 @@ final class Recorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
     }
 
-    func locationManager(_ manager: CLLocationManager, didUpdateHeading h: CLHeading) {
+    func recordHeading(_ h: CLHeading) {
         guard active else { return }
         let nowUp = ProcessInfo.processInfo.systemUptime
         let t = nowUp + h.timestamp.timeIntervalSinceNow
@@ -399,9 +385,6 @@ final class Recorder: NSObject, ObservableObject, CLLocationManagerDelegate {
         queue.async { self.files["gps"]?.write(rec) }
     }
 
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        event("gps_error", ["msg": error.localizedDescription])
-    }
 
     // MARK: 메타
 

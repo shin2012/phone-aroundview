@@ -88,6 +88,7 @@ struct RootView: View {
                 if !ar.headingLearned {
                     chip("방향 보정 중 · 직진해 주세요", color: .yellow)
                 }
+                if !ar.skipText.isEmpty { chip("노면 기록 쉼 · \(ar.skipText)", color: .orange) }
                 if !ar.thermalText.isEmpty { chip(ar.thermalText, color: .red) }
                 if !detector.status.isEmpty { chip(detector.status, color: .red) }
                 if rec.isRecording {

@@ -6,7 +6,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: '5.0'
-    MARKETING_VERSION: '0.3.0'
+    MARKETING_VERSION: '0.4.0'
     CURRENT_PROJECT_VERSION: '1'
     TARGETED_DEVICE_FAMILY: '1'
     CODE_SIGN_STYLE: Automatic
@@ -36,7 +36,7 @@ targets:
         INFOPLIST_KEY_UIStatusBarHidden: YES
         INFOPLIST_KEY_UIRequiresFullScreen: YES
         INFOPLIST_KEY_NSCameraUsageDescription: 앞 카메라 영상으로 차 주변 노면과 물체를 그리기 위해 카메라를 사용합니다.
-        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: 주행 기록을 켰을 때 GPS 속도·위치를 함께 저장해 화면 계산을 검증합니다.
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: GPS 속도로 화면 계산(카메라 위치 추적)이 맞는지 확인하고, 주행 기록에 위치·속도를 함께 저장합니다.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 schemes:
   AroundView:

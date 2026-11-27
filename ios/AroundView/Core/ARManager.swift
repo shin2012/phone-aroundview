@@ -3,8 +3,8 @@ import Combine
 import simd
 
 /// ARKit 세션 + 자차 자세 추정.
-/// 폰은 차에 고정돼 있으므로 "차 방향 = 카메라 방위각 + 고정 오프셋".
-/// 오프셋은 직진 주행 중 이동 방향으로 학습한다 (폰이 비뚤게 거치돼도 보정).
+/// 폰은 차에 고정돼 있고 카메라가 앞을 보므로 "차 방향 = 카메라 방위각 + 거치 비뚤어짐(±45°)".
+/// 전진·후진·흔들림 걸러내기·GPS 검증은 PoseFilter 참고.
 final class ARManager: NSObject, ObservableObject, ARSessionDelegate {
     static let shared = ARManager()
 
@@ -16,6 +16,7 @@ final class ARManager: NSObject, ObservableObject, ARSessionDelegate {
     @Published var trackingText = "시작 전"
     @Published var trackingOK = false
     @Published var headingLearned = false
+    @Published var skipText = ""   // 노면 기록을 쉬는 이유 (흔들림 등)
     @Published var thermalText = ""
 
     // 렌더러/검출기용 최신 프레임 (lock 보호)
@@ -26,11 +27,10 @@ final class ARManager: NSObject, ObservableObject, ARSessionDelegate {
     private var _frameID: UInt64 = 0
     private var _resetID: UInt64 = 0
 
-    // 자세 추정 상태 (ar 큐 전용)
+    // 자세 추정 (ar 큐 전용) — 계산은 PoseFilter
     private var t0: TimeInterval?
-    private var history: [(t: Double, p: SIMD3<Float>, yaw: Float)] = []
-    private var offsetVec = SIMD2<Float>(1, 0) // (cos, sin)
-    private var offsetSamples = 0
+    private let filter = PoseFilter()
+    private var _writeID: UInt64 = 0
     private var lastPublish: Double = 0
     private var cachedImageSize = CGSize.zero
     private var cachedToPortrait = CGAffineTransform.identity
@@ -42,12 +42,21 @@ final class ARManager: NSObject, ObservableObject, ARSessionDelegate {
         super.init()
         session.delegate = self
         session.delegateQueue = queue
+        SensorHub.shared.onForwardAccel = { [weak self] t, a in
+            guard let self else { return }
+            self.queue.async { self.filter.accel(t: t, forward: a) }
+        }
+        SensorHub.shared.onGPS = { [weak self] t, spd, acc in
+            guard let self else { return }
+            self.queue.async { self.filter.gps(t: t, speed: spd, speedAccuracy: acc) }
+        }
     }
 
+    /// 반환의 네 번째 값은 "노면 기억에 써도 되는 프레임" 번호 — 흔들림·추적 이상 프레임에서는 늘지 않는다
     func latest() -> (CVPixelBuffer, CameraSnap, CarPose, UInt64, UInt64)? {
         lock.lock(); defer { lock.unlock() }
         guard let pb = _pixelBuffer, let s = _snap else { return nil }
-        return (pb, s, _pose, _frameID, _resetID)
+        return (pb, s, _pose, _writeID, _resetID)
     }
 
     func start() {
@@ -65,11 +74,13 @@ final class ARManager: NSObject, ObservableObject, ARSessionDelegate {
             config.videoFormat = fmt
         }
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
+        SensorHub.shared.start()
         UIApplication.shared.isIdleTimerDisabled = true
     }
 
     func pause() {
         session.pause()
+        if !Recorder.shared.isRecording { SensorHub.shared.stop() }
         UIApplication.shared.isIdleTimerDisabled = false
     }
 
@@ -77,9 +88,8 @@ final class ARManager: NSObject, ObservableObject, ARSessionDelegate {
     func reset(keepHeading: Bool = true) {
         Recorder.shared.event("reset", ["keepHeading": keepHeading])
         queue.async {
-            self.history.removeAll()
+            self.filter.reset(keepOffset: keepHeading)
             self.t0 = nil
-            if !keepHeading { self.offsetVec = SIMD2(1, 0); self.offsetSamples = 0 }
             self.lock.lock(); self._resetID &+= 1; self._pixelBuffer = nil; self._snap = nil; self.lock.unlock()
             DispatchQueue.main.async { self.start() }
         }
@@ -104,53 +114,19 @@ final class ARManager: NSObject, ObservableObject, ARSessionDelegate {
             cachedFromPortrait = cachedToPortrait.inverted()
         }
 
-        // 카메라 광축의 수평 방위
         let look = -SIMD3<Float>(tf.columns.2.x, tf.columns.2.y, tf.columns.2.z)
-        let lookH = SIMD2<Float>(look.x, look.z)
-        var camYaw: Float = history.last?.yaw ?? 0
-        if simd_length(lookH) > 0.15 { camYaw = atan2f(lookH.y, lookH.x) }
-
         let ok: Bool
         switch cam.trackingState {
         case .normal: ok = true
         default: ok = false
         }
 
-        history.append((t, pos, camYaw))
-        history.removeAll { t - $0.t > 0.6 }
-
-        // 속도 (0.5초 창)
-        var vel = SIMD2<Float>(0, 0)
-        if let first = history.first, t - first.t > 0.25 {
-            let dt = Float(t - first.t)
-            vel = SIMD2((pos.x - first.p.x) / dt, (pos.z - first.p.z) / dt)
-        }
-        let speed = simd_length(vel)
-
-        // 방향 오프셋 학습: 직진(방위 변화 작음) + 충분한 속도
-        var offsetAngle = atan2f(offsetVec.y, offsetVec.x)
-        if ok, speed > 2.5, let first = history.first {
-            let yawRate = abs(angleDiff(camYaw, first.yaw)) / Float(max(t - first.t, 0.01))
-            if yawRate < 0.06 { // 약 3.4°/s 미만
-                var moveAngle = atan2f(vel.y, vel.x)
-                let curHeading = camYaw + offsetAngle
-                // 후진이면 반대 방향
-                if offsetSamples > 0, cosf(angleDiff(moveAngle, curHeading)) < 0 { moveAngle += .pi }
-                let est = angleDiff(moveAngle, camYaw)
-                let estVec = SIMD2<Float>(cosf(est), sinf(est))
-                let alpha: Float = offsetSamples == 0 ? 1 : 0.03
-                offsetVec = simd_normalize(offsetVec * (1 - alpha) + estVec * alpha)
-                offsetSamples += 1
-                offsetAngle = atan2f(offsetVec.y, offsetVec.x)
-            }
-        }
-
-        let heading = camYaw + offsetAngle
-        let mount = Prefs.f(Prefs.mountHeight)
-        let groundY = pos.y - mount
+        filter.mountHeight = Prefs.f(Prefs.mountHeight)
+        let o = filter.frame(t: t, pos: pos, look: look, ok: ok)
         var pose = CarPose()
-        pose.origin = SIMD3(pos.x, groundY, pos.z)
-        pose.forward = SIMD3(cosf(heading), 0, sinf(heading))
+        pose.origin = o.origin
+        pose.forward = SIMD3(o.forward.x, 0, o.forward.y)
+        let groundY = o.groundY
 
         let snap = CameraSnap(transform: tf, intrinsics: cam.intrinsics,
                               imageSize: SIMD2(Float(res.width), Float(res.height)),
@@ -158,27 +134,32 @@ final class ARManager: NSObject, ObservableObject, ARSessionDelegate {
                               groundY: groundY, time: time, stamp: t)
 
         lock.lock()
-        if ok { // 추적이 불안정하면 노면을 기록하지 않음 (이전 정상 프레임 유지)
-            _pixelBuffer = frame.capturedImage
-            _snap = snap
+        if ok { // 추적이 불안정하면 이전 정상 프레임 유지
             _pose = pose
             _frameID &+= 1
+            // 흔들림·GPS 불일치 프레임은 노면에 쓰지 않음 → 기록용 영상·자세는 마지막 좋은 프레임으로 둔다
+            if o.writeGround || _snap == nil {
+                _pixelBuffer = frame.capturedImage
+                _snap = snap
+                _writeID &+= 1
+            }
         }
         lock.unlock()
 
         if ok { onFrame?(frame.capturedImage, snap, pose) }
 
         if Recorder.shared.active {
-            let signedSpeed = simd_dot(SIMD3(vel.x, 0, vel.y), pose.forward) >= 0 ? speed : -speed
-            Recorder.shared.record(frame: frame, pose: pose, speed: signedSpeed, offsetAngle: offsetAngle,
-                                   offsetSamples: offsetSamples, ok: ok)
+            Recorder.shared.record(frame: frame, pose: pose, speed: o.speed, offsetAngle: o.offset,
+                                   offsetSamples: o.offsetSamples, ok: ok,
+                                   write: o.writeGround, skipReason: o.reason, groundY: groundY)
         }
 
         if t - lastPublish > 0.2 {
             lastPublish = t
-            let signed = simd_dot(SIMD3(vel.x, 0, vel.y), pose.forward) >= 0 ? speed : -speed
+            let signed = o.speed
             let text = Self.describe(cam.trackingState)
-            let learned = offsetSamples > 30
+            let learned = o.offsetSamples > 30
+            let skip = ok ? o.reason : ""
             let thermal = Self.thermal()
             DispatchQueue.main.async {
                 self.speedKmh = Double(signed) * 3.6
@@ -186,6 +167,7 @@ final class ARManager: NSObject, ObservableObject, ARSessionDelegate {
                 self.trackingOK = ok
                 self.headingLearned = learned
                 self.thermalText = thermal
+                self.skipText = skip
             }
         }
     }
@@ -229,11 +211,4 @@ final class ARManager: NSObject, ObservableObject, ARSessionDelegate {
         @unknown default: return ""
         }
     }
-}
-
-func angleDiff(_ a: Float, _ b: Float) -> Float {
-    var d = a - b
-    while d > .pi { d -= 2 * .pi }
-    while d < -.pi { d += 2 * .pi }
-    return d
 }
